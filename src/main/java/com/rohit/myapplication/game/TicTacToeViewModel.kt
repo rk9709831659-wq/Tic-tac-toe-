@@ -6,16 +6,19 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlin.random.Random
 
 enum class Player { X, O }
 enum class GameMode { SinglePlayer, TwoPlayer }
 
+// 🔥 IMPORTANT CHANGE (winPositions added)
 sealed class GameStatus {
     object Ongoing : GameStatus()
-    data class Win(val player: Player, val winPositions: List<Int>) : GameStatus()
+    data class Win(
+        val player: Player,
+        val winPositions: List<Int>
+    ) : GameStatus()
     object Draw : GameStatus()
 }
 
@@ -23,8 +26,7 @@ data class TicTacToeState(
     val board: List<Player?> = List(9) { null },
     val currentPlayer: Player = Player.X,
     val gameStatus: GameStatus = GameStatus.Ongoing,
-    val gameMode: GameMode = GameMode.SinglePlayer,
-    val isAiThinking: Boolean = false
+    val gameMode: GameMode = GameMode.SinglePlayer
 )
 
 class TicTacToeViewModel : ViewModel() {
@@ -36,124 +38,91 @@ class TicTacToeViewModel : ViewModel() {
         when (action) {
             is TicTacToeAction.MakeMove -> makeMove(action.position)
             TicTacToeAction.ResetGame -> resetGame()
-            is TicTacToeAction.ChangeGameMode -> changeGameMode(action.mode)
+            is TicTacToeAction.ChangeMode -> changeMode(action.mode)
         }
     }
 
     private fun makeMove(position: Int) {
-        val currentState = _state.value
-        if (currentState.board[position] != null || currentState.gameStatus !is GameStatus.Ongoing || currentState.isAiThinking) {
-            return
-        }
+        val current = _state.value
 
-        val newBoard = currentState.board.toMutableList()
-        newBoard[position] = currentState.currentPlayer
+        if (current.board[position] != null || current.gameStatus !is GameStatus.Ongoing) return
 
-        val newStatus = checkGameStatus(newBoard)
-        val nextPlayer = if (currentState.currentPlayer == Player.X) Player.O else Player.X
+        val newBoard = current.board.toMutableList()
+        newBoard[position] = current.currentPlayer
 
-        _state.update {
-            it.copy(
-                board = newBoard,
-                currentPlayer = nextPlayer,
-                gameStatus = newStatus
-            )
-        }
+        val status = checkWinner(newBoard)
+        val nextPlayer = if (current.currentPlayer == Player.X) Player.O else Player.X
 
-        if (newStatus is GameStatus.Ongoing && _state.value.gameMode == GameMode.SinglePlayer && nextPlayer == Player.O) {
-            triggerAiMove()
+        _state.value = current.copy(
+            board = newBoard,
+            currentPlayer = nextPlayer,
+            gameStatus = status
+        )
+
+        // 🤖 AI only in single player
+        if (status is GameStatus.Ongoing &&
+            _state.value.gameMode == GameMode.SinglePlayer &&
+            nextPlayer == Player.O
+        ) {
+            aiMove()
         }
     }
 
-    private fun triggerAiMove() {
+    private fun aiMove() {
         viewModelScope.launch {
-            _state.update { it.copy(isAiThinking = true) }
-            delay(600) // Simulate thinking
-            val aiMove = getAiMove(_state.value.board)
-            if (aiMove != -1) {
-                val newBoard = _state.value.board.toMutableList()
-                newBoard[aiMove] = Player.O
-                val newStatus = checkGameStatus(newBoard)
-                _state.update {
-                    it.copy(
-                        board = newBoard,
-                        currentPlayer = Player.X,
-                        gameStatus = newStatus,
-                        isAiThinking = false
-                    )
-                }
-            } else {
-                _state.update { it.copy(isAiThinking = false) }
+            delay(500)
+
+            val board = _state.value.board.toMutableList()
+            val empty = board.indices.filter { board[it] == null }
+
+            if (empty.isNotEmpty()) {
+                val move = empty[Random.nextInt(empty.size)]
+                board[move] = Player.O
+
+                val status = checkWinner(board)
+
+                _state.value = _state.value.copy(
+                    board = board,
+                    currentPlayer = Player.X,
+                    gameStatus = status
+                )
             }
         }
     }
 
-    private fun getAiMove(board: List<Player?>): Int {
-        // 1. Try to win
-        findWinningMove(board, Player.O)?.let { return it }
-        // 2. Block player X
-        findWinningMove(board, Player.X)?.let { return it }
-        // 3. Take center
-        if (board[4] == null) return 4
-        // 4. Random available
-        val available = board.indices.filter { board[it] == null }
-        return if (available.isNotEmpty()) available[Random.nextInt(available.size)] else -1
-    }
-
-    private fun findWinningMove(board: List<Player?>, player: Player): Int? {
-        val winPatterns = listOf(
-            listOf(0, 1, 2), listOf(3, 4, 5), listOf(6, 7, 8), // Rows
-            listOf(0, 3, 6), listOf(1, 4, 7), listOf(2, 5, 8), // Cols
-            listOf(0, 4, 8), listOf(2, 4, 6) // Diagonals
-        )
-        for (pattern in winPatterns) {
-            val count = pattern.count { board[it] == player }
-            val emptyIndex = pattern.firstOrNull { board[it] == null }
-            if (count == 2 && emptyIndex != null) {
-                return emptyIndex
-            }
-        }
-        return null
-    }
-
-    private fun checkGameStatus(board: List<Player?>): GameStatus {
-        val winPatterns = listOf(
-            listOf(0, 1, 2), listOf(3, 4, 5), listOf(6, 7, 8),
-            listOf(0, 3, 6), listOf(1, 4, 7), listOf(2, 5, 8),
-            listOf(0, 4, 8), listOf(2, 4, 6)
+    private fun checkWinner(board: List<Player?>): GameStatus {
+        val wins = listOf(
+            listOf(0,1,2), listOf(3,4,5), listOf(6,7,8),
+            listOf(0,3,6), listOf(1,4,7), listOf(2,5,8),
+            listOf(0,4,8), listOf(2,4,6)
         )
 
-        for (pattern in winPatterns) {
-            if (board[pattern[0]] != null &&
-                board[pattern[0]] == board[pattern[1]] &&
-                board[pattern[0]] == board[pattern[2]]
+        for (w in wins) {
+            if (board[w[0]] != null &&
+                board[w[0]] == board[w[1]] &&
+                board[w[1]] == board[w[2]]
             ) {
-                return GameStatus.Win(board[pattern[0]]!!, pattern)
+                // 🔥 return win with positions
+                return GameStatus.Win(board[w[0]]!!, w)
             }
         }
 
-        if (board.all { it != null }) {
-            return GameStatus.Draw
-        }
+        if (board.all { it != null }) return GameStatus.Draw
 
         return GameStatus.Ongoing
     }
 
     private fun resetGame() {
-        _state.update {
-            TicTacToeState(gameMode = it.gameMode)
-        }
+        _state.value = TicTacToeState(gameMode = _state.value.gameMode)
     }
 
-    private fun changeGameMode(mode: GameMode) {
-        _state.update {
-            TicTacToeState(gameMode = mode)
-        }
+    private fun changeMode(mode: GameMode) {
+        _state.value = TicTacToeState(gameMode = mode)
     }
 }
 
 sealed class TicTacToeAction {
     data class MakeMove(val position: Int) : TicTacToeAction()
     object ResetGame : TicTacToeAction()
-    data class ChangeGameMode(val mode: GameMode) : TicTacToeAction()
+    data class ChangeMode(val mode: GameMode) : TicTacToeAction()
 }
